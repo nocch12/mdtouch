@@ -22,26 +22,129 @@ THE SOFTWARE.
 package cmd
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
-
+const sep = string(os.PathSeparator)
 
 // rootCmd represents the base command when called without any subcommands
-var rootCmd = &cobra.Command{
-	Use:   "mdtouch",
-	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
+var (
+	forceFlg bool
+
+	rootCmd = &cobra.Command{
+		Use:   "mdtouch",
+		Short: "Create directories and touch files at the same time.",
+		Long: `A longer description that spans multiple lines and likely contains
 examples and usage of using your application. For example:
 
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) { },
+		// Uncomment the following line if your bare application
+		// has an action associated with it:
+		Run: func(cmd *cobra.Command, args []string) {
+			// 引数がない場合はエラー
+			if len(args) == 0 {
+				fmt.Println("error: One or more arguments are required")
+				return
+			}
+
+			defaultUmask := syscall.Umask(0)
+			for _, file := range args {
+				if err := command(file); err != nil {
+					fmt.Println("error: " + err.Error())
+					break
+				}
+			}
+			syscall.Umask(defaultUmask)
+		},
+	}
+)
+
+func command(arg string) error {
+	// ディレクトリで終わっている場合はエラー
+	if strings.HasSuffix(arg, sep) {
+		return errors.New("argument must be a file")
+	}
+
+	dirname, _ := filepath.Split(arg)
+
+	// forceフラグがなければディレクトリ作成を確認する
+	if !forceFlg {
+		// 末尾スラッシュを削除
+		dirList := strings.Split(dirname[:len(dirname)-1], sep)
+
+		// 1階層ずつディレクトリの存在をチェック
+		curDir := ""         // チェック中ディレクトリ
+		dirString := ""      // 標準出力用文字列
+		needsCreate := false // ディレクトリを作成するか
+		for _, dir := range dirList {
+			curDir += dir + sep // / ./ hoge/fuga/
+			if _, err := os.Stat(curDir); os.IsNotExist(err) {
+				needsCreate = true
+				// 作成するディレクトリに色を付けて出力
+				dirString += toRed(dir) + sep
+			} else {
+				dirString += dir + sep
+			}
+		}
+		if needsCreate {
+			fmt.Printf("directory: %s", dirString+"\n")
+			fmt.Println("allow directory creation? [y/n]")
+			scanner := bufio.NewScanner(os.Stdin)
+			scanner.Scan()
+			if scanner.Text() != "y" {
+				fmt.Println("'y' was not entered. Skip this process.")
+				return nil
+			}
+		}
+	}
+
+	// ディレクトリ再帰作成
+	if err := os.MkdirAll(dirname, os.ModePerm); err != nil {
+		return err
+	}
+	os.Chmod(dirname, os.ModePerm)
+
+	// ファイル更新
+	if err := touch(arg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// touchコマンド
+func touch(filename string) error {
+	_, err := os.Stat(filename)
+	if os.IsNotExist(err) {
+		file, err := os.Create(filename)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		os.Chmod(filename, os.ModePerm)
+	} else {
+		currentTime := time.Now().Local()
+		err = os.Chtimes(filename, currentTime, currentTime)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// 出力時の文字色を赤色にする
+func toRed(s string) string {
+	return fmt.Sprintf("\x1b[31m%s\x1b[0m", s)
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -54,15 +157,5 @@ func Execute() {
 }
 
 func init() {
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
-	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.mdtouch.yaml)")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	rootCmd.Flags().BoolVarP(&forceFlg, "force", "f", false, "Forces creation of directories and touches to files")
 }
-
-
